@@ -1,0 +1,466 @@
+---
+title: "DataFest2024"
+author: "Veronica"
+date: "2024-03-02"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(readr)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+
+responses_1 <- read.csv("/Users/veronicaupadhyay/Downloads/RandomSample/main_responses.csv")
+media_views_1 <- read.csv("/Users/veronicaupadhyay/Downloads/RandomSample/main_media_views.csv")
+```
+
+Create a df of only English speakers, where both NA values and manual answers like "english only" both count as an English speaker
+```{r}
+English <- responses_1 %>%
+# Keep rows where only this question is being asked
+  filter(
+    prompt == "If you indicated that English is not your most proficient language, what is your primary language?") %>%
+# Make responses all lowercase
+  mutate(response = tolower(response)) %>%
+# Keep rows where there is an NA or there is a manual answer of the student saying english
+  filter(is.na(response) | response %in% c("n/a", "na", ".", "-", "--", "...", "f", "a", "nothing", "none", "-na-", "english is my most proficient language", "english only"))
+```
+
+Create a df of students who's most proficient language is a Foreign Language. Being by using a outside list of all languages from WALS. 
+```{r}
+# Foreign_Langs is a df of all foreign languages: 
+Foreign_Langs <- read.csv("/Users/veronicaupadhyay/Downloads/language.csv") %>%
+                 select(Name) %>%
+                 mutate(Name = gsub("\\s*\\([^\\)]+\\)", "", Name)) %>%
+                 mutate(Name = tolower(Name)) %>%
+                 filter(Name != "english") # List of ~2678 languages
+
+# Non_English is the whole df with just non english speakers
+#---------------------------------------------------------
+Non_English <- responses_1 %>%
+  filter(
+    prompt == "If you indicated that English is not your most proficient language, what is your primary language?", !is.na(response) 
+    ) %>%
+  
+  mutate(response = tolower(response)) %>%
+  
+  mutate(
+    response = 
+    ifelse(response %in% c("n/a","na",".","-","--","...","f","a","nothing","none","-na-","english is my most proficient language","english only"), NA,
+           
+    ifelse(grepl(".*\\s+is my.*", response), NA,
+           
+    ifelse(grepl(".*\\s+and\\s+.*", response), gsub(".*\\s+and\\s+(\\w+).*", "\\1", response),
+           
+    ifelse(grepl(".*(\\w+)\\s+too", response), gsub(".*(\\w+)\\s+too", "\\1", response), response))))) %>%
+  
+  filter(response%in%Foreign_Langs$Name)
+
+Non_English <- Non_English[!is.na(Non_English$response), ]
+```
+
+Quick plot of nonenglish speakers
+```{r}
+#---------------------------------------------------------
+library(ggplot2)
+
+ggplot(Non_English) +
+  geom_bar(aes(x= response), fill = "skyblue") +
+  
+  labs(title = "Counts of Non-English Languages",
+       x = "Foreign Language",
+       y = "Count")  +
+  coord_flip()
+
+# Then maybe do how many of them spend over a certain amount of times on videos
+```
+
+Make two DF of the students' languages and their IDs
+```{r}
+English_ID <- English %>%
+  select(student_id, response) %>%
+  mutate(student_id=as.character(student_id))%>%
+  mutate(response=as.character(response))
+  
+Non_English_ID <- Non_English %>%
+  select(student_id, response)%>%
+  mutate(student_id=as.character(student_id))%>%
+  mutate(response=as.character(response))
+
+Languaged_ID <- rbind(Non_English_ID, English_ID) %>%
+  mutate(response = ifelse(is.na(response) | 
+                    response %in% c("n/a", "na", ".", "-", "--", "...", 
+                                           "f", "a", "nothing", "none", "-na-", 
+                                           "english is my most proficient language", 
+                                           "english only"), "english", response))
+
+media_views_1 <- media_views_1 %>%
+  mutate(student_id = as.character(student_id))
+
+Language_Media_1 <- Languaged_ID %>%
+  merge(media_views_1, by = "student_id") %>%
+  select(student_id, response, proportion_video, access_count, media_id, dt_last_event, dt_started, proportion_time)
+```
+
+Facet wrapped by the language spoken, x axis the number of time accessed the video and y is the proportion of the vide watched (per access count)
+```{r}
+ggplot(Language_Media_1, aes(x = access_count, y = proportion_video)) +
+  geom_point() +
+  facet_wrap(~ response) +
+  labs(title = "Access Count vs Proportion Video by Language",
+       x = "Access Count",
+       y = "Proportion Video") 
+```
+
+```{r}
+ggplot(Language_Media_1, aes(x = response,y = access_count, fill = proportion_video)) +
+  geom_tile() +
+  labs(title = "Access Count vs Proportion Video by Language",
+       x = "Language ",
+       y = "Access Count",
+       fill = "Proportion Video") +
+  coord_flip()
+```
+
+
+Average view counts by language may be more informative
+
+```{r}
+avg_access_count <- Language_Media_1 %>%
+  group_by(response) %>%
+    summarise(avg_access_count = mean(access_count, na.rm = TRUE))
+
+ggplot(avg_access_count, aes(x = response, y = avg_access_count, fill = response)) +
+  geom_bar(stat = "identity") + 
+  labs(title = "Average Amount of Times Video was Accessed",
+       x = "Language",
+       y = "Average Access Count") +
+  coord_flip() +
+  theme(legend.position = "none")
+
+```
+
+Now, no more languages... now about what they're scared of
+--------------------------------------------------
+
+```{r}
+Success_Prompt1 <- responses_1 %>%
+  filter(prompt == "What, if anything, made it hard to succeed in this class?", !is.na(response)) %>%
+  
+  mutate(response = tolower(response)) %>%
+  
+  mutate(factor_variable = case_when(
+    str_detect(response, "\\b(grandpa|family|mom|personal|sick)\\b") ~ "Personal",
+    
+    str_detect(response, "\\b(na|nothing|n/a|no|not applicable)\\b") ~ "Nothing",
+    
+    str_detect(response, "\\b(familiar|not good at|coding|prior)\\b") ~ "Familiarity",
+    
+    str_detect(response, "\\b(attention|dry|ADHD|dyslexia|boring|interest|interesting)\\b") ~ "Attention",
+    
+    str_detect(response, "\\b(juggling|time management|other classes|other courses|fall behind|motivation|time commitment|falling behind|last minute|procrastination|procrastinating|cram)\\b") ~ "Time Management",
+    
+    str_detect(response, "\\b(in class|prof|professor)\\b") ~ "Institutional Learning",
+    
+    str_detect(response, "\\b(a lot|overwhelming|hard to follow|flipped classroom|overload|lengthy|pace|fast|heavy|content|concepts|tedious|homework|dense|textbook|workload|little explanation)\\b") ~ "Course_Structure",
+    
+    TRUE ~ "Other"
+  ))
+    
+
+ggplot(Success_Prompt1, aes(x = factor_variable, fill = factor_variable)) +
+  geom_bar() +
+  labs(title = "Prevelance of Success Concerns",
+       x = "Concern Categories",
+       y = "Count") +
+  
+  scale_fill_manual(values = c("Personal" = "lightgreen", 
+                               "Attention" = "blue4",
+                                "Nothing" = "violet", 
+                                "Familiarity" = "yellow3", 
+                                "Time Management" = "pink",
+                                "Institutional Learning" = "skyblue",
+                                "Course_Structure" = "coral")) +
+  theme(legend.position = "none") +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+
+```
+
+
+
+
+
+
+
+
+
+Fail:
+```{r}
+#FAIL
+Non_English <- responses_1 %>%
+         filter(
+           prompt == 
+                  "If you indicated that English is not your most proficient language, what is your primary language?",
+           !is.na(response)) %>%  #theres more types of NAs to look out for
+  
+         mutate(response = tolower(response)) #%>%
+
+        # filter(response %in% Foreign_Langs$Name)
+
+
+print(unique(Non_English$response))
+```
+
+```{r}
+responses_2 <- responses_1 %>%
+
+# Translate og date+times into usable format
+  mutate(lrn_dt_started= ymd_hms(lrn_dt_started),
+         lrn_dt_saved= ymd_hms(lrn_dt_saved),
+         dt_submitted= ymd_hms(dt_submitted)) %>%
+  
+# Make new columns to separate out the Y,M,D and H,M  
+  mutate(lrn_dt_started_year= year(lrn_dt_started),
+         lrn_dt_started_month= month(lrn_dt_started),
+         lrn_dt_started_day= day(lrn_dt_started),
+         lrn_dt_started_hour= hour(lrn_dt_started),
+         lrn_dt_started_minute= minute(lrn_dt_started),
+         
+         lrn_dt_saved_year= year(lrn_dt_saved),
+         lrn_dt_saved_month= month(lrn_dt_saved),
+         lrn_dt_saved_day= day(lrn_dt_saved),
+         lrn_dt_saved_hour= hour(lrn_dt_saved),
+         lrn_dt_saved_minute= minute(lrn_dt_saved),
+         
+         dt_submitted_year= year(dt_submitted),
+         dt_submitted_month= month(dt_submitted),
+         dt_submitted_day= day(dt_submitted),
+         dt_submitted_hour= hour(dt_submitted),
+         dt_submitted_minute= minute(dt_submitted),
+         
+         answering_tim_mins = (dt_submitted-lrn_dt_started)/dminutes(1)) %>%
+  
+  filter(answering_tim_mins <= 10,
+         !is.na(lrn_type)
+         ) %>%
+  
+  mutate(time_of_day = case_when(
+    lrn_dt_started_hour >= 22 & lrn_dt_started_hour < 4 ~ "Morning",
+    lrn_dt_started_hour >= 4 & lrn_dt_started_hour < 10 ~ "Afternoon",
+    lrn_dt_started_hour >= 10 & lrn_dt_started_hour < 16 ~ "Evening",
+    lrn_dt_started_hour >= 16 & lrn_dt_started_hour < 22 ~ "Night",)) # UST to PST 
+  
+# Plot with time_of_day as fill
+ggplot(responses_2, aes(x = chapter, y = answering_tim_mins, fill = time_of_day)) +
+  geom_boxplot() +
+  coord_flip()
+
+
+
+```
+
+```{r}
+# Do Practice Exams effectively prepare students for 
+
+PracticeE <- responses_1 %>%
+  filter(chapter == "Practice Exam") 
+
+
+
+Midterm <- responses_1 %>%
+  filter(grepl('Midterm', chapter)) 
+
+print(unique(PracticeE$prompt))
+print(unique(Midterm$prompt))
+
+PracticeE_Midterm <- responses_1 %>%
+  filter(chapter == "Practice Exam" | grepl('Midterm', chapter)) 
+```
+
+```{r}
+# Translate original date+times into usable format
+responses_2 <- responses_1 %>%
+  mutate(lrn_dt_started = ymd_hms(lrn_dt_started),
+         lrn_dt_saved = ymd_hms(lrn_dt_saved),
+         dt_submitted = ymd_hms(dt_submitted)) %>%
+  
+  # Make new columns to separate out the Y, M, D, H, M
+  mutate(lrn_dt_started_hour = hour(lrn_dt_started),
+         lrn_dt_started_day = day(lrn_dt_started),
+         lrn_dt_started_month = month(lrn_dt_started),
+         lrn_dt_started_year = year(lrn_dt_started),
+         
+         # Calculate answering time in minutes
+         answering_tim_mins = as.numeric(difftime(dt_submitted, lrn_dt_started, units = "mins")),
+         
+         # Calculate accuracy
+         accuracy = (points_earned / points_possible)) %>%
+  
+  # Group by hour and calculate average accuracy per hour
+  group_by(lrn_dt_started_hour) %>%
+  summarise(avg_accuracy = mean(accuracy, na.rm = TRUE))
+
+
+# Plot the average accuracy per hour
+ggplot(responses_2) +
+  geom_line(aes(x = lrn_dt_started_hour, y = avg_accuracy), color = "red", size = 1.2) +
+  geom_point(aes(x = lrn_dt_started_hour, y = avg_accuracy), color = "red", size = 3) +
+  
+  geom_histogram(aes(x = lrn_dt_started_hour), alpha = 0.3, fill = "skyblue", color = "black", binwidth = 1)
+                 
+                 
+                 )
+
+```
+
+```{r}
+library(lubridate)
+
+
+responses_2 <- responses_1 %>%
+  
+# Select only relevant columns
+  select(student_id, 
+         lrn_dt_started, lrn_dt_saved, dt_submitted, 
+         lrn_question_reference, lrn_type, attempt,
+         points_earned, points_possible,
+         chapter_number) %>%
+
+# Translate og date+times into usable format
+  mutate(lrn_dt_started= ymd_hms(lrn_dt_started),
+         lrn_dt_saved= ymd_hms(lrn_dt_saved),
+         dt_submitted= ymd_hms(dt_submitted)) %>%
+  
+# Make new columns to separate out the Y,M,D and H,M  
+  mutate(lrn_dt_started_year= year(lrn_dt_started),
+         lrn_dt_started_month= month(lrn_dt_started),
+         lrn_dt_started_day= day(lrn_dt_started),
+         lrn_dt_started_hour= hour(lrn_dt_started),
+         lrn_dt_started_minute= minute(lrn_dt_started),
+         
+         lrn_dt_saved_year= year(lrn_dt_saved),
+         lrn_dt_saved_month= month(lrn_dt_saved),
+         lrn_dt_saved_day= day(lrn_dt_saved),
+         lrn_dt_saved_hour= hour(lrn_dt_saved),
+         lrn_dt_saved_minute= minute(lrn_dt_saved),
+         
+         dt_submitted_year= year(dt_submitted),
+         dt_submitted_month= month(dt_submitted),
+         dt_submitted_day= day(dt_submitted),
+         dt_submitted_hour= hour(dt_submitted),
+         dt_submitted_minute= minute(dt_submitted)) %>%
+
+# Subtractions between when the question was started and when it was submitted; then take out the ugly time columns
+  mutate(answering_tim_mins = 
+           (dt_submitted-lrn_dt_started)/dminutes(1)) %>%
+  select(-c(lrn_dt_started,lrn_dt_saved,dt_submitted) %>%
+  
+# ⭐ But we're supposed to take into account the saved time... cause some of these timings span 11 hours and obv nobody took that long 
+
+# For each unique student, then for each unique question, filter for questions that were attempted >=2 times.
+  group_by(student_id, lrn_question_reference) %>%
+  filter(n() >= 2) 
+
+# NAs in the following columns are kind of useless to us; filter()ing makes dataset p small though
+# ⭐  NO WAIT this step is removing consecutive attempts at a question from the df
+#  filter(!is.na(student_id) & 
+#         !is.na(lrn_question_reference) & 
+#         !is.na(lrn_type) & 
+#         !is.na(points_earned) & 
+#         !is.na(points_possible)) 
+
+
+ggplot(responses_2, aes(x = attempt, y = answering_tim_mins)) +
+  geom_point() +
+  facet_wrap(~ lrn_type)  # ⭐  also add something so that it ignores na values
+
+ 
+
+```
+
+#FINAL VERSION
+```{r}
+# ⭐ Make sure stuffs is in the correct datatype (chr, int, dbl)
+# ⭐ Wish there were explanations for NAs!!!! ugh
+
+  
+responses_2 <- inner_join(responses_1, page_views_1, by= "chapter_number")
+
+
+responses_3 <- responses_2 %>%
+  
+# Translate og date+times into usable format
+  mutate(lrn_dt_started= ymd_hms(lrn_dt_started),
+         lrn_dt_saved= ymd_hms(lrn_dt_saved),
+         dt_submitted= ymd_hms(dt_submitted)) %>%
+  
+# Make new columns to separate out the Y,M,D and H,M  
+  mutate(lrn_dt_started_year= year(lrn_dt_started),
+         lrn_dt_started_month= month(lrn_dt_started),
+         lrn_dt_started_day= day(lrn_dt_started),
+         lrn_dt_started_hour= hour(lrn_dt_started),
+         lrn_dt_started_minute= minute(lrn_dt_started),
+         
+         lrn_dt_saved_year= year(lrn_dt_saved),
+         lrn_dt_saved_month= month(lrn_dt_saved),
+         lrn_dt_saved_day= day(lrn_dt_saved),
+         lrn_dt_saved_hour= hour(lrn_dt_saved),
+         lrn_dt_saved_minute= minute(lrn_dt_saved),
+         
+         dt_submitted_year= year(dt_submitted),
+         dt_submitted_month= month(dt_submitted),
+         dt_submitted_day= day(dt_submitted),
+         dt_submitted_hour= hour(dt_submitted),
+         dt_submitted_minute= minute(dt_submitted)) %>%
+
+# Subtractions between when the question was started and when it was submitted; then take out the ugly time columns
+  mutate(answering_tim_mins = 
+           (dt_submitted-lrn_dt_started)/dminutes(1)) %>%
+  select(-c(lrn_dt_started,lrn_dt_saved,dt_submitted)) %>%
+  
+# ⭐ But we're supposed to take into account the saved time... cause some of these timings span 11 hours and obv nobody took that long 
+
+# For each unique student, then for each unique question, filter for questions that were attempted >=2 times.
+  group_by(student_id, lrn_question_reference) %>%
+  filter(n() >= 2) 
+
+# NAs in the following columns are kind of useless to us; filter()ing makes dataset p small though
+# ⭐  NO WAIT this step is removing consecutive attempts at a question from the df
+#  filter(!is.na(student_id) & 
+#         !is.na(lrn_question_reference) & 
+#         !is.na(lrn_type) & 
+#         !is.na(points_earned) & 
+#         !is.na(points_possible)) 
+
+
+animated_plot <- ggplot(responses_3, aes(x = dt_accessed, y = chapter, fill = engaged)) +
+  geom_tile() +
+  facet_wrap(~ lrn_type) +  
+  transition_time(dt_accessed)  # Animate over time
+
+
+
+
+
+
+
+
+
+# Render the animated plot
+animated_plot
+
+#ggplot(responses_3, aes(x = chapter_number, y = answering_tim_mins, color = lrn_type)) +
+#  geom_point(data = subset(responses_2, answering_tim_mins <= 200))
+#+
+  #facet_wrap(~lrn_type)  # ⭐  also add something so that it ignores na values
+
+
+```
